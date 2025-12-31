@@ -72,7 +72,7 @@ select = ["ALL"]
 known-first-party = ["aiosendspin_mpris"]
 
 [tool.basedpyright]
-typeCheckingMode = "default"
+typeCheckingMode = "recommended"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
