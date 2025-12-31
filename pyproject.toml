@@ -1,0 +1,91 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=62.3"]
+
+[project]
+name = "aiosendspin-mpris"
+version = "0.9.0"
+description = "MPRIS integration for aiosendspin"
+authors = [ {name = "Abílio Costa", email = "amfcalt@gmail.com"}
+]
+classifiers = [
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "aiosendspin>=1.2.0",
+  "mpris_server>=0.9.0; sys_platform == 'linux'",
+]
+license = { text = "Apache-2.0" }
+readme = "README.md"
+requires-python = ">=3.12"
+
+[project.urls]
+Homepage = "https://github.com/abmantis/aiosendspin-mpris"
+
+[project.optional-dependencies]
+test = [
+  "basedpyright>=1.36.0",
+  "ruff>=0.14.5",
+]
+
+[tool.ruff]
+fix = true
+show-fixes = true
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+ignore = [
+  "ANN002",
+  "ANN003",
+  "ANN401",
+  "ARG002",   # Unused method arguments - required by MprisAdapter interface
+  "BLE001",   # Catching blind exceptions - needed for MPRIS error handling
+  "D203",
+  "D213",
+  "D417",
+  "E402",     # Module level import not at top - required for optional imports
+  "EM101",
+  "EM102",
+  "FBT001",   # Boolean positional args - required by MprisAdapter interface
+  "FIX002",
+  "PGH004",
+  "PD011",
+  "PLC0415",  # Import not at top level - required for optional/conditional imports
+  "PLR2004",
+  "S101",
+  "TC001",
+  "TC002",    # Move imports to type-checking block - optional imports need runtime check
+  "TC003",
+  "TD002",
+  "TD003",
+  "TD004",
+  "TRY003",
+  "TRY400",
+  "COM812",
+]
+select = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aiosendspin_mpris"]
+
+[tool.basedpyright]
+typeCheckingMode = "default"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+build_command = "pip install build && python -m build"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.remote]
+type = "github"
+
+[tool.semantic_release.publish]
+dist_glob_patterns = ["dist/*"]
+upload_to_vcs_release = true
