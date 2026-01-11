@@ -1,7 +1,15 @@
 # CHANGELOG
 
 
+## v2.0.1 (2026-01-11)
+
+
 ## v2.0.0 (2026-01-11)
+
+### Bug Fixes
+
+- Move mpris_server import to conditional imports
+  ([`c0bd490`](https://github.com/abmantis/aiosendspin-mpris/commit/c0bd490e90857ef4fc72738809c6113af9297075))
 
 ### Chores
 
