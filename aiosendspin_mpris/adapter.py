@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, override
 
 from aiosendspin.models.types import MediaCommand, PlaybackStateType
-from mpris_server.base import Volume
 
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
@@ -24,7 +23,7 @@ MPRIS_AVAILABLE = False
 if sys.platform == "linux":
     try:
         from mpris_server.adapters import MprisAdapter
-        from mpris_server.base import DEFAULT_DESKTOP, PlayState
+        from mpris_server.base import DEFAULT_DESKTOP, PlayState, Volume
         from mpris_server.mpris.metadata import MetadataObj, ValidMetadata
 
         MPRIS_AVAILABLE = True  # pyright: ignore[reportConstantRedefinition]
