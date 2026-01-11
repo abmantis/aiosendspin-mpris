@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .adapter import MPRIS_AVAILABLE, MprisState, SendspinMprisAdapter
 
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
+    from aiosendspin.models.core import GroupUpdateServerPayload, ServerStatePayload
     from aiosendspin.models.types import MediaCommand, PlaybackStateType
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +28,10 @@ class SendspinMpris:
 
     Provides desktop media control integration on Linux systems, using MPRIS.
 
+    When started, this class automatically registers listeners on the provided
+    SendspinClient to update MPRIS state when metadata, playback state, or volume
+    changes are received from the server.
+
     Example usage:
         ```python
         from aiosendspin import SendspinClient
@@ -33,12 +39,7 @@ class SendspinMpris:
 
         client = SendspinClient(...)
         mpris = SendspinMpris(client)
-        mpris.start()
-
-        # Update state when it changes
-        mpris.set_metadata(title="Song", artist="Artist", album="Album")
-        mpris.set_playback_state(PlaybackStateType.PLAYING)
-        mpris.set_volume(volume=75, muted=False)
+        mpris.start()  # Starts MPRIS and attaches listeners to client
 
         # Later
         mpris.stop()
@@ -55,6 +56,7 @@ class SendspinMpris:
     _event_adapter: EventAdapter | None
     _thread: threading.Thread | None
     _running: bool
+    _listener_removers: list[Callable[[], None]]
 
     def __init__(
         self, client: SendspinClient, name: str = "Sendspin", desktop_entry: str | None = None
@@ -62,7 +64,7 @@ class SendspinMpris:
         """Initialize the MPRIS interface.
 
         Args:
-            client: SendspinClient instance for sending commands.
+            client: SendspinClient instance for sending commands and receiving state updates.
             name: Application name shown in MPRIS (default: "Sendspin").
             desktop_entry: The .desktop file name, with the '.desktop' extension stripped, or None.
 
@@ -79,11 +81,15 @@ class SendspinMpris:
         self._event_adapter = None
         self._thread = None
         self._running = False
+        self._listener_removers = []
 
     def start(self) -> None:
-        """Start the MPRIS D-Bus service.
+        """Start the MPRIS D-Bus service and attach listeners to the client.
 
-        This creates a background thread that runs the MPRIS server.
+        This creates a background thread that runs the MPRIS server and registers
+        listeners on the client to automatically update MPRIS state when metadata,
+        playback state, or volume changes are received from the server.
+
         If MPRIS is not available (not on Linux or mpris_server not installed),
         this method does nothing.
         """
@@ -125,15 +131,25 @@ class SendspinMpris:
         self._thread = threading.Thread(target=run_loop, daemon=True, name="mpris-server")
         self._thread.start()
         self._running = True
+
+        self._attach_client_listeners()
+
         _LOGGER.info("MPRIS interface started")
 
     def stop(self) -> None:
-        """Stop the MPRIS D-Bus service."""
+        """Stop the MPRIS D-Bus service and remove client listeners."""
         if not self._running:
             return
 
         self._running = False
         self._event_adapter = None
+
+        for remover in self._listener_removers:
+            try:
+                remover()
+            except Exception:
+                _LOGGER.debug("Error removing listener", exc_info=True)
+        self._listener_removers.clear()
 
         if self._server is not None:
             try:
@@ -148,6 +164,65 @@ class SendspinMpris:
             self._thread = None
 
         _LOGGER.info("MPRIS interface stopped")
+
+    def _attach_client_listeners(self) -> None:
+        """Attach event listeners to the client for MPRIS state updates."""
+        self._listener_removers.append(self._client.add_metadata_listener(self._on_metadata_update))
+        self._listener_removers.append(
+            self._client.add_group_update_listener(self._on_group_update)
+        )
+        self._listener_removers.append(
+            self._client.add_controller_state_listener(self._on_controller_state)
+        )
+
+        _LOGGER.debug("Attached MPRIS listeners to SendspinClient")
+
+    def _on_metadata_update(self, payload: ServerStatePayload) -> None:
+        """Handle metadata updates from the client."""
+        from aiosendspin.models.types import UndefinedField
+
+        metadata = payload.metadata
+        if metadata is None:
+            return
+
+        # Extract metadata fields
+        title = (
+            metadata.title if not isinstance(metadata.title, UndefinedField) else self._state.title
+        )
+        artist = (
+            metadata.artist
+            if not isinstance(metadata.artist, UndefinedField)
+            else self._state.artist
+        )
+        album = (
+            metadata.album if not isinstance(metadata.album, UndefinedField) else self._state.album
+        )
+
+        # Extract duration from progress if available
+        duration_ms = self._state.duration_ms
+        progress_ms = self._state.progress_ms
+
+        if not isinstance(metadata.progress, UndefinedField) and metadata.progress is not None:
+            duration_ms = metadata.progress.track_duration
+            progress_ms = metadata.progress.track_progress
+
+        self.set_metadata(title=title, artist=artist, album=album, duration_ms=duration_ms)
+
+        if progress_ms is not None:
+            self.set_progress(progress_ms)
+
+    def _on_group_update(self, payload: GroupUpdateServerPayload) -> None:
+        """Handle group update (playback state) from the client."""
+        if payload.playback_state is not None:
+            self.set_playback_state(payload.playback_state)
+
+    def _on_controller_state(self, payload: ServerStatePayload) -> None:
+        """Handle controller state updates from the client."""
+        controller = payload.controller
+        if controller is None:
+            return
+        self.set_supported_commands(set(controller.supported_commands))
+        self.set_volume(controller.volume, muted=controller.muted)
 
     def set_metadata(
         self,
