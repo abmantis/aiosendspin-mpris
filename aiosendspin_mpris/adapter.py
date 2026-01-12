@@ -14,17 +14,23 @@ from aiosendspin.models.types import MediaCommand, PlaybackStateType
 
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
+    from tunit.unit import Microseconds
 
 _LOGGER = logging.getLogger(__name__)
 
-# MPRIS is only available on Linux with mpris_server installed
+# MPRIS is only available on Linux with mpris_api installed
 MPRIS_AVAILABLE = False
 
 if sys.platform == "linux":
     try:
-        from mpris_server.adapters import MprisAdapter
-        from mpris_server.base import DEFAULT_DESKTOP, PlayState, Volume
-        from mpris_server.mpris.metadata import MetadataObj, ValidMetadata
+        from mpris_api.adapter.IMprisAdapterPlayer import IMprisAdapterPlayer
+        from mpris_api.adapter.IMprisAdapterRoot import IMprisAdapterRoot
+        from mpris_api.adapter.IMprisAdapterTrackList import IMprisAdapterTrackList
+        from mpris_api.common.DbusObject import DbusObject
+        from mpris_api.model.MprisLoopStatus import MprisLoopStatus
+        from mpris_api.model.MprisMetaData import MprisMetaData
+        from mpris_api.model.MprisPlaybackStatus import MprisPlaybackStatus
+        from tunit.unit import Microseconds
 
         MPRIS_AVAILABLE = True  # pyright: ignore[reportConstantRedefinition]
     except ImportError:
@@ -32,14 +38,28 @@ if sys.platform == "linux":
 
 if not MPRIS_AVAILABLE:
 
-    class _DummyMprisAdapter:
-        """Dummy adapter base class when mpris_server is not installed."""
+    class _DummyIMprisAdapterRoot:
+        """Dummy adapter base class when mpris_api is not installed."""
+
+        def __init__(self) -> None:
+            pass
+
+    class _DummyIMprisAdapterPlayer:
+        """Dummy adapter base class when mpris_api is not installed."""
+
+        def __init__(self) -> None:
+            pass
+
+    class _DummyIMprisAdapterTrackList:
+        """Dummy adapter base class when mpris_api is not installed."""
 
         def __init__(self) -> None:
             pass
 
     if not TYPE_CHECKING:  # otherwise pyright complains too much
-        MprisAdapter = _DummyMprisAdapter
+        IMprisAdapterRoot = _DummyIMprisAdapterRoot
+        IMprisAdapterPlayer = _DummyIMprisAdapterPlayer
+        IMprisAdapterTrackList = _DummyIMprisAdapterTrackList
 
 
 @dataclass
@@ -57,8 +77,77 @@ class MprisState:
     progress_ms: int | None = None
 
 
-class SendspinMprisAdapter(MprisAdapter):
-    """Adapter bridging Sendspin state to MPRIS interface.
+class SendspinMprisAdapterRoot(IMprisAdapterRoot):
+    """Adapter for the MPRIS Root interface (org.mpris.MediaPlayer2)."""
+
+    _identity: str
+    _desktop_entry: str | None
+
+    def __init__(self, identity: str, desktop_entry: str | None = None) -> None:
+        """Initialize the MPRIS root adapter."""
+        self._identity = identity
+        self._desktop_entry = desktop_entry
+
+    @override
+    def canRaise(self) -> bool:
+        """Return whether raise window is supported."""
+        return False
+
+    @override
+    def canQuit(self) -> bool:
+        """Return whether quit is supported."""
+        return False
+
+    @override
+    def canSetFullscreen(self) -> bool:
+        """Return whether fullscreen is supported."""
+        return False
+
+    @override
+    def getIdentity(self) -> str:
+        """Return application identity."""
+        return self._identity
+
+    @override
+    def getDesktopEntry(self) -> str | None:
+        """Return desktop entry name."""
+        return self._desktop_entry
+
+    @override
+    def getSupportedUriSchemes(self) -> list[str]:
+        """Return supported URI schemes."""
+        return ["ws", "wss"]
+
+    @override
+    def getSupportedMimeTypes(self) -> list[str]:
+        """Return supported MIME types."""
+        return ["audio/*"]
+
+    @override
+    def hasTracklist(self) -> bool:
+        """Return whether tracklist is supported."""
+        return False
+
+    @override
+    def isFullScreen(self) -> bool:
+        """Return whether app is fullscreen."""
+        return False
+
+    @override
+    def setFullScreen(self, value: bool) -> None:
+        """Set fullscreen state (not supported)."""
+
+    @override
+    def quitApp(self) -> None:
+        """Quit application (not supported)."""
+
+    @override
+    def raiseApp(self) -> None:
+        """Raise application window (not supported)."""
+
+
+class SendspinMprisAdapterPlayer(IMprisAdapterPlayer):
+    """Adapter bridging Sendspin state to MPRIS Player interface.
 
     This adapter reads state from an internal MprisState dataclass and
     dispatches commands to the SendspinClient.
@@ -67,148 +156,125 @@ class SendspinMprisAdapter(MprisAdapter):
     _client: SendspinClient
     _loop: asyncio.AbstractEventLoop
     _state: MprisState
-    _desktop_entry: str | None
 
     def __init__(
-        self,
-        client: SendspinClient,
-        loop: asyncio.AbstractEventLoop,
-        state: MprisState,
-        desktop_entry: str | None,
+        self, client: SendspinClient, loop: asyncio.AbstractEventLoop, state: MprisState
     ) -> None:
-        """Initialize the MPRIS adapter."""
-        super().__init__()
+        """Initialize the MPRIS player adapter."""
         self._client = client
         self._loop = loop
         self._state = state
-        self._desktop_entry = desktop_entry
 
     @override
-    def get_uri_schemes(self) -> list[str]:
-        """Return supported URI schemes."""
-        return ["ws", "wss"]
+    def canControl(self) -> bool:
+        """Return whether the player can be controlled."""
+        return True
 
     @override
-    def get_mime_types(self) -> list[str]:
-        """Return supported MIME types."""
-        return ["audio/*"]
+    def canPlay(self) -> bool:
+        """Return whether play is supported."""
+        return MediaCommand.PLAY in self._state.supported_commands
 
     @override
-    def get_desktop_entry(self) -> str:
-        """Return desktop entry name."""
-        return self._desktop_entry or DEFAULT_DESKTOP
+    def canPause(self) -> bool:
+        """Return whether pause is supported."""
+        return MediaCommand.PAUSE in self._state.supported_commands
 
     @override
-    def metadata(self) -> ValidMetadata:
-        """Return current track metadata in MPRIS format."""
-        duration_us = (self._state.duration_ms or 0) * 1000
-        return MetadataObj(
-            track_id="/org/sendspin/track/current",
-            length=duration_us,
-            title=self._state.title or "",
-            artists=[self._state.artist] if self._state.artist else [],
-            album=self._state.album or "",
-        )
+    def canGoNext(self) -> bool:
+        """Return whether next track is supported."""
+        return MediaCommand.NEXT in self._state.supported_commands
 
     @override
-    def get_playstate(self) -> PlayState:
-        """Return current playback state."""
-        if self._state.playback_state == PlaybackStateType.PLAYING:
-            return PlayState.PLAYING
-        if self._state.playback_state == PlaybackStateType.PAUSED:
-            return PlayState.PAUSED
-        return PlayState.STOPPED
+    def canGoPrevious(self) -> bool:
+        """Return whether previous track is supported."""
+        return MediaCommand.PREVIOUS in self._state.supported_commands
 
     @override
-    def get_current_position(self) -> int:
-        """Return current track position in microseconds."""
-        return (self._state.progress_ms or 0) * 1000
+    def canSeek(self) -> bool:
+        """Return whether seeking is supported."""
+        return False
 
     @override
-    def get_volume(self) -> Volume:
+    def getMinimumRate(self) -> float:
+        """Return minimum playback rate."""
+        return 1.0
+
+    @override
+    def getMaximumRate(self) -> float:
+        """Return maximum playback rate."""
+        return 1.0
+
+    @override
+    def getRate(self) -> float:
+        """Return current playback rate."""
+        return 1.0
+
+    @override
+    def setRate(self, value: float) -> None:
+        """Set playback rate (not supported)."""
+
+    @override
+    def getVolume(self) -> float:
         """Return current volume as 0.0-1.0."""
         if self._state.muted:
-            return Volume(0.0)
-        return Volume(self._state.volume / 100.0)
+            return 0.0
+        return self._state.volume / 100.0
 
     @override
-    def set_volume(self, value: Volume) -> None:
+    def setVolume(self, value: float) -> None:
         """Set volume from 0.0-1.0 value."""
         volume_int = max(0, min(100, int(value * 100)))
         self._dispatch_command(MediaCommand.VOLUME, volume=volume_int)
 
     @override
-    def is_mute(self) -> bool:
-        """Return whether player is muted."""
-        return self._state.muted
+    def getMetadata(self) -> MprisMetaData:
+        """Return current track metadata in MPRIS format."""
+        duration_us = Microseconds((self._state.duration_ms or 0) * 1000)
+        return MprisMetaData(
+            trackId=DbusObject.fromName("sendspin_track_current"),
+            length=duration_us,
+            title=self._state.title or "",
+            artists=[self._state.artist] if self._state.artist else None,
+            album=self._state.album or "",
+        )
 
     @override
-    def set_mute(self, value: bool) -> None:
-        """Set mute state."""
-        if value != self._state.muted:
-            self._dispatch_command(MediaCommand.MUTE, mute=value)
+    def getPlaybackStatus(self) -> MprisPlaybackStatus:
+        """Return current playback state."""
+        if self._state.playback_state == PlaybackStateType.PLAYING:
+            return MprisPlaybackStatus.PLAYING
+        if self._state.playback_state == PlaybackStateType.PAUSED:
+            return MprisPlaybackStatus.PAUSED
+        return MprisPlaybackStatus.STOPPED
 
     @override
-    def can_control(self) -> bool:
-        """Return whether the player can be controlled."""
-        return True
+    def getPosition(self) -> Microseconds:
+        """Return current track position in microseconds."""
+        return Microseconds((self._state.progress_ms or 0) * 1000)
 
     @override
-    def can_play(self) -> bool:
-        """Return whether play is supported."""
-        return MediaCommand.PLAY in self._state.supported_commands
+    def getLoopStatus(self) -> MprisLoopStatus:
+        """Return loop status (not supported, always None)."""
+        return MprisLoopStatus.NONE
 
     @override
-    def can_pause(self) -> bool:
-        """Return whether pause is supported."""
-        return MediaCommand.PAUSE in self._state.supported_commands
+    def setLoopStatus(self, value: MprisLoopStatus) -> None:
+        """Set loop status (not supported)."""
 
     @override
-    def can_go_next(self) -> bool:
-        """Return whether next track is supported."""
-        return MediaCommand.NEXT in self._state.supported_commands
-
-    @override
-    def can_go_previous(self) -> bool:
-        """Return whether previous track is supported."""
-        return MediaCommand.PREVIOUS in self._state.supported_commands
-
-    @override
-    def can_seek(self) -> bool:
-        """Return whether seeking is supported."""
+    def isShuffle(self) -> bool:
+        """Return whether shuffle is enabled."""
         return False
 
     @override
-    def can_quit(self) -> bool:
-        """Return whether quit is supported."""
-        return False
+    def setShuffle(self, value: bool) -> None:
+        """Set shuffle state (not supported)."""
 
     @override
-    def can_raise(self) -> bool:
-        """Return whether raise window is supported."""
-        return False
-
-    @override
-    def can_fullscreen(self) -> bool:
-        """Return whether fullscreen is supported."""
-        return False
-
-    @override
-    def get_active_playlist(self) -> tuple[bool, tuple[str, str, str]]:
-        """Return active playlist info. We don't support playlists."""
-        return (False, ("/", "", ""))
-
-    @override
-    def get_playlist_count(self) -> int:
-        """Return number of playlists."""
-        return 0
-
-    @override
-    def get_playlists(
-        self, index: int, max_count: int, order: str, reverse: bool
-    ) -> list[tuple[str, str, str]]:
-        """Return list of playlists."""
-        return []
+    def stop(self) -> None:
+        """Stop playback."""
+        self._dispatch_command(MediaCommand.STOP)
 
     @override
     def play(self) -> None:
@@ -231,14 +297,12 @@ class SendspinMprisAdapter(MprisAdapter):
         self._dispatch_command(MediaCommand.PREVIOUS)
 
     @override
-    def stop(self) -> None:
-        """Stop playback."""
-        self._dispatch_command(MediaCommand.STOP)
+    def seek(self, position: Microseconds, trackId: str | None = None) -> None:
+        """Seek to position (not supported)."""
 
     @override
-    def get_stream_title(self) -> str:
-        """Return stream title."""
-        return self._state.title or ""
+    def openUri(self, uri: str) -> None:
+        """Open URI (not supported)."""
 
     def _dispatch_command(
         self, command: MediaCommand, *, volume: int | None = None, mute: bool | None = None
@@ -251,3 +315,38 @@ class SendspinMprisAdapter(MprisAdapter):
             )
         except RuntimeError:
             _LOGGER.debug("Failed to dispatch MPRIS command: event loop not available")
+
+
+class SendspinMprisAdapterTrackList(IMprisAdapterTrackList):
+    """Stub adapter for the MPRIS TrackList interface.
+
+    This provides an empty implementation to prevent D-Bus errors when
+    clients query for the TrackList interface.
+    """
+
+    @override
+    def getTracksMetadata(self, trackIds: list[str]) -> list[MprisMetaData]:
+        """Return metadata for the given track IDs (empty - not supported)."""
+        return []
+
+    @override
+    def addTrack(self, uri: str, goTo: bool = False, afterTrackId: str | None = None) -> None:
+        """Add a track (not supported)."""
+
+    @override
+    def removeTrack(self, trackId: str) -> None:
+        """Remove a track (not supported)."""
+
+    @override
+    def gotTo(self, trackId: str) -> None:
+        """Go to a track (not supported)."""
+
+    @override
+    def canEditTracks(self) -> bool:
+        """Return whether editing tracks is supported."""
+        return False
+
+    @override
+    def getTracks(self) -> list[DbusObject]:
+        """Return list of tracks (empty - not supported)."""
+        return []

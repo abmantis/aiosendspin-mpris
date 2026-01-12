@@ -15,7 +15,7 @@ classifiers = [
 ]
 dependencies = [
   "aiosendspin>=2.0.0",
-  "mpris_server>=0.9.0; sys_platform == 'linux'",
+  "mpris-api>=1.3.0; sys_platform == 'linux'",
 ]
 license = { text = "Apache-2.0" }
 readme = "README.md"

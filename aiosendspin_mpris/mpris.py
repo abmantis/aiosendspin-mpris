@@ -4,23 +4,52 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final, override
 
-from .adapter import MPRIS_AVAILABLE, MprisState, SendspinMprisAdapter
+from .adapter import (
+    MPRIS_AVAILABLE,
+    MprisState,
+    SendspinMprisAdapterPlayer,
+    SendspinMprisAdapterRoot,
+    SendspinMprisAdapterTrackList,
+)
 
 if TYPE_CHECKING:
     from aiosendspin.client import SendspinClient
     from aiosendspin.models.core import GroupUpdateServerPayload, ServerStatePayload
     from aiosendspin.models.types import MediaCommand, PlaybackStateType
+    from mpris_api.MprisService import MprisService
+    from mpris_api.MprisUpdateNotifier import MprisUpdateNotifier
 
 _LOGGER = logging.getLogger(__name__)
 
 if MPRIS_AVAILABLE:
-    from mpris_server.events import EventAdapter
-    from mpris_server.interfaces.interface import MprisInterface
-    from mpris_server.server import Server
+    from mpris_api.MprisService import MprisService
+
+
+@final
+class _MprisErrorFilter(logging.Filter):
+    """Filter to suppress expected MPRIS interface errors.
+
+    Some MPRIS clients query for optional interfaces (like Playlists) which is not
+    properly supported by the mpris-api lib. This filter suppresses the
+    resulting D-Bus errors to avoid cluttering the output.
+    """
+
+    _SUPPRESSED_INTERFACES = ("org.mpris.MediaPlayer2.Playlists",)
+
+    @override
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False to suppress the log record, True to allow it."""
+        if record.levelno != logging.ERROR:
+            return True
+
+        msg = record.getMessage()
+        if "could not find an interface" not in msg:
+            return True
+
+        return not any(iface in msg for iface in self._SUPPRESSED_INTERFACES)
 
 
 class SendspinMpris:
@@ -51,12 +80,14 @@ class SendspinMpris:
     _desktop_entry: str | None
     _loop: asyncio.AbstractEventLoop | None
     _state: MprisState
-    _adapter: SendspinMprisAdapter | None
-    _server: Server[SendspinMprisAdapter, EventAdapter, MprisInterface[SendspinMprisAdapter]] | None
-    _event_adapter: EventAdapter | None
-    _thread: threading.Thread | None
+    _adapter_root: SendspinMprisAdapterRoot | None
+    _adapter_player: SendspinMprisAdapterPlayer | None
+    _adapter_tracklist: SendspinMprisAdapterTrackList | None
+    _service: MprisService | None
+    _update_notifier: MprisUpdateNotifier | None
     _running: bool
     _listener_removers: list[Callable[[], None]]
+    _error_filter: _MprisErrorFilter | None
 
     def __init__(
         self, client: SendspinClient, name: str = "Sendspin", desktop_entry: str | None = None
@@ -76,12 +107,14 @@ class SendspinMpris:
 
         self._state = MprisState()
 
-        self._adapter = None
-        self._server = None
-        self._event_adapter = None
-        self._thread = None
+        self._adapter_root = None
+        self._adapter_player = None
+        self._adapter_tracklist = None
+        self._service = None
+        self._update_notifier = None
         self._running = False
         self._listener_removers = []
+        self._error_filter = None
 
     def start(self) -> None:
         """Start the MPRIS D-Bus service and attach listeners to the client.
@@ -90,11 +123,11 @@ class SendspinMpris:
         listeners on the client to automatically update MPRIS state when metadata,
         playback state, or volume changes are received from the server.
 
-        If MPRIS is not available (not on Linux or mpris_server not installed),
+        If MPRIS is not available (not on Linux or mpris_api not installed),
         this method does nothing.
         """
         if not MPRIS_AVAILABLE:
-            _LOGGER.debug("MPRIS not available: mpris_server package not installed or not on Linux")
+            _LOGGER.debug("MPRIS not available: mpris_api package not installed or not on Linux")
             return
 
         if self._running:
@@ -106,30 +139,25 @@ class SendspinMpris:
         except RuntimeError as err:
             raise RuntimeError("MPRIS must be started from within a running event loop") from err
 
-        self._adapter = SendspinMprisAdapter(
-            self._client, self._loop, self._state, desktop_entry=self._desktop_entry
+        # Add filter to suppress expected D-Bus errors for unimplemented interfaces
+        self._error_filter = _MprisErrorFilter()
+        logging.getLogger().addFilter(self._error_filter)
+
+        self._adapter_root = SendspinMprisAdapterRoot(
+            identity=self._name, desktop_entry=self._desktop_entry
         )
+        self._adapter_player = SendspinMprisAdapterPlayer(self._client, self._loop, self._state)
+        self._adapter_tracklist = SendspinMprisAdapterTrackList()
 
-        self._server = Server(name=self._name, adapter=self._adapter)  # pyright: ignore [reportPossiblyUnboundVariable]
-
-        self._event_adapter = EventAdapter(  # pyright: ignore [reportPossiblyUnboundVariable]
-            root=self._server.root,
-            player=self._server.player,
-            playlists=self._server.playlists,
-            tracklist=self._server.tracklist,
+        self._service = MprisService(
+            name=self._name,
+            adapterRoot=self._adapter_root,
+            adapterPlayer=self._adapter_player,
+            adapterTrackList=self._adapter_tracklist,
         )
+        self._service.start()
+        self._update_notifier = self._service.updateNotifier
 
-        # Copy server instance to local variable for thread, since self._server may be None
-        server = self._server
-
-        def run_loop() -> None:
-            try:
-                server.loop()
-            except Exception:
-                _LOGGER.exception("MPRIS server loop error")
-
-        self._thread = threading.Thread(target=run_loop, daemon=True, name="mpris-server")
-        self._thread.start()
         self._running = True
 
         self._attach_client_listeners()
@@ -142,7 +170,7 @@ class SendspinMpris:
             return
 
         self._running = False
-        self._event_adapter = None
+        self._update_notifier = None
 
         for remover in self._listener_removers:
             try:
@@ -151,17 +179,20 @@ class SendspinMpris:
                 _LOGGER.debug("Error removing listener", exc_info=True)
         self._listener_removers.clear()
 
-        if self._server is not None:
+        if self._service is not None:
             try:
-                self._server.quit()
+                self._service.stop()
             except Exception:
-                _LOGGER.debug("Error stopping MPRIS server", exc_info=True)
-            self._server = None
+                _LOGGER.debug("Error stopping MPRIS service", exc_info=True)
+            self._service = None
 
-        if self._thread is not None:
-            _LOGGER.debug("Waiting for MPRIS server thread to exit")
-            self._thread.join(timeout=1)
-            self._thread = None
+        self._adapter_root = None
+        self._adapter_player = None
+        self._adapter_tracklist = None
+
+        if self._error_filter is not None:
+            logging.getLogger().removeFilter(self._error_filter)
+            self._error_filter = None
 
         _LOGGER.info("MPRIS interface stopped")
 
@@ -237,12 +268,12 @@ class SendspinMpris:
         self._state.album = album
         self._state.duration_ms = duration_ms
 
-        if self._event_adapter is None:
-            _LOGGER.warning("MPRIS event adapter not initialized; cannot emit metadata change")
+        if self._update_notifier is None:
+            _LOGGER.warning("MPRIS update notifier not initialized; cannot emit metadata change")
             return
 
         try:
-            self._event_adapter.on_title()
+            self._update_notifier.emitterPlayer.emitPropertyChangeAll()
         except Exception:
             _LOGGER.debug("Failed to emit MPRIS metadata change", exc_info=True)
 
@@ -254,14 +285,14 @@ class SendspinMpris:
         """Update playback state."""
         self._state.playback_state = state
 
-        if self._event_adapter is None:
+        if self._update_notifier is None:
             _LOGGER.warning(
-                "MPRIS event adapter not initialized; cannot emit playback state change"
+                "MPRIS update notifier not initialized; cannot emit playback state change"
             )
             return
 
         try:
-            self._event_adapter.on_playpause()
+            self._update_notifier.emitterPlayer.emitPropertyChangeAll()
         except Exception:
             _LOGGER.debug("Failed to emit MPRIS playback state change", exc_info=True)
 
@@ -276,12 +307,12 @@ class SendspinMpris:
         self._state.volume = volume
         self._state.muted = muted
 
-        if self._event_adapter is None:
-            _LOGGER.warning("MPRIS event adapter not initialized; cannot emit volume change")
+        if self._update_notifier is None:
+            _LOGGER.warning("MPRIS update notifier not initialized; cannot emit volume change")
             return
 
         try:
-            self._event_adapter.on_volume()
+            self._update_notifier.emitterPlayer.emitPropertyChangeAll()
         except Exception:
             _LOGGER.debug("Failed to emit MPRIS volume change", exc_info=True)
 
@@ -292,11 +323,11 @@ class SendspinMpris:
         """
         self._state.supported_commands = commands
 
-        if self._event_adapter is None:
-            _LOGGER.warning("MPRIS event adapter not initialized; cannot emit options change")
+        if self._update_notifier is None:
+            _LOGGER.warning("MPRIS update notifier not initialized; cannot emit options change")
             return
 
         try:
-            self._event_adapter.on_options()
+            self._update_notifier.emitterPlayer.emitPropertyChangeAll()
         except Exception:
             _LOGGER.debug("Failed to emit MPRIS options change", exc_info=True)

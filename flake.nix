@@ -18,12 +18,6 @@
               python313
               python313Packages.venvShellHook
               python313Packages.uv
-
-              # Required for building pycairo and pygobject (mpris-server deps)
-              pkg-config
-              cairo
-              gobject-introspection
-              glib
             ];
 
             venvDir = ".venv";
