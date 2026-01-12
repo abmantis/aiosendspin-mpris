@@ -1,7 +1,18 @@
 # CHANGELOG
 
 
+## v2.1.0 (2026-01-12)
+
+
 ## v2.0.1 (2026-01-11)
+
+### Features
+
+- Migrate MPRIS implementation from mpris_server to mpris-api
+  ([`d697bd9`](https://github.com/abmantis/aiosendspin-mpris/commit/d697bd9af86a548d9166d15ed8c6a7c2f16b5c27))
+
+mpris_server depends on pygobject which in turn depends on pycairo. mpris-api has simpler
+  dependencies.
 
 
 ## v2.0.0 (2026-01-11)
