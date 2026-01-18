@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v2.1.1 (2026-01-18)
+
+### Bug Fixes
+
+- Override MprisService to properly handle dbus errors
+  ([`43b238c`](https://github.com/abmantis/aiosendspin-mpris/commit/43b238cae2539255f5fc9c559e763b7895bcc414))
+
+
 ## v2.1.0 (2026-01-12)
 
 

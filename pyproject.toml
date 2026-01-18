@@ -4,7 +4,7 @@ requires = ["setuptools>=62.3"]
 
 [project]
 name = "aiosendspin-mpris"
-version = "2.1.0"
+version = "2.1.1"
 description = "MPRIS integration for aiosendspin"
 authors = [ {name = "Abílio Costa", email = "amfcalt@gmail.com"}
 ]
