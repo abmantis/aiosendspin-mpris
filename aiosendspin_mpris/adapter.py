@@ -24,12 +24,15 @@ MPRIS_AVAILABLE = False
 if sys.platform == "linux":
     try:
         from mpris_api.adapter.IMprisAdapterPlayer import IMprisAdapterPlayer
+        from mpris_api.adapter.IMprisAdapterPlayLists import IMprisAdapterPlayLists
         from mpris_api.adapter.IMprisAdapterRoot import IMprisAdapterRoot
         from mpris_api.adapter.IMprisAdapterTrackList import IMprisAdapterTrackList
         from mpris_api.common.DbusObject import DbusObject
         from mpris_api.model.MprisLoopStatus import MprisLoopStatus
         from mpris_api.model.MprisMetaData import MprisMetaData
         from mpris_api.model.MprisPlaybackStatus import MprisPlaybackStatus
+        from mpris_api.model.MprisPlaylist import MprisPlaylist
+        from mpris_api.model.MprisPlaylistOrdering import MprisPlaylistOrdering
         from tunit.unit import Microseconds
 
         MPRIS_AVAILABLE = True  # pyright: ignore[reportConstantRedefinition]
@@ -56,10 +59,17 @@ if not MPRIS_AVAILABLE:
         def __init__(self) -> None:
             pass
 
+    class _DummyIMprisAdapterPlayLists:
+        """Dummy adapter base class when mpris_api is not installed."""
+
+        def __init__(self) -> None:
+            pass
+
     if not TYPE_CHECKING:  # otherwise pyright complains too much
         IMprisAdapterRoot = _DummyIMprisAdapterRoot
         IMprisAdapterPlayer = _DummyIMprisAdapterPlayer
         IMprisAdapterTrackList = _DummyIMprisAdapterTrackList
+        IMprisAdapterPlayLists = _DummyIMprisAdapterPlayLists
 
 
 @dataclass
@@ -349,4 +359,34 @@ class SendspinMprisAdapterTrackList(IMprisAdapterTrackList):
     @override
     def getTracks(self) -> list[DbusObject]:
         """Return list of tracks (empty - not supported)."""
+        return []
+
+
+class SendspinMprisAdapterPlaylists(IMprisAdapterPlayLists):
+    """Stub adapter for the MPRIS PlayLists interface.
+
+    This provides an empty implementation to prevent D-Bus errors when
+    clients query for the PlayLists interface.
+    """
+
+    @override
+    def getPlaylistCount(self) -> int:
+        return 0
+
+    @override
+    def getAvailableOrderings(self) -> list[MprisPlaylistOrdering]:
+        return []
+
+    @override
+    def getActivePlaylist(self) -> MprisPlaylist | None:
+        return None
+
+    @override
+    def activatePlaylist(self, playlistId: str) -> None:
+        pass
+
+    @override
+    def getPlaylists(
+        self, index: int, maxCount: int, order: MprisPlaylistOrdering, reverseOrder: bool
+    ) -> list[MprisPlaylist]:
         return []

@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, final, override
+from typing import TYPE_CHECKING
 
 from .adapter import (
     MPRIS_AVAILABLE,
     MprisState,
     SendspinMprisAdapterPlayer,
+    SendspinMprisAdapterPlaylists,
     SendspinMprisAdapterRoot,
     SendspinMprisAdapterTrackList,
 )
@@ -22,34 +23,8 @@ if TYPE_CHECKING:
     from mpris_api.MprisService import MprisService
     from mpris_api.MprisUpdateNotifier import MprisUpdateNotifier
 
+
 _LOGGER = logging.getLogger(__name__)
-
-if MPRIS_AVAILABLE:
-    from mpris_api.MprisService import MprisService
-
-
-@final
-class _MprisErrorFilter(logging.Filter):
-    """Filter to suppress expected MPRIS interface errors.
-
-    Some MPRIS clients query for optional interfaces (like Playlists) which is not
-    properly supported by the mpris-api lib. This filter suppresses the
-    resulting D-Bus errors to avoid cluttering the output.
-    """
-
-    _SUPPRESSED_INTERFACES = ("org.mpris.MediaPlayer2.Playlists",)
-
-    @override
-    def filter(self, record: logging.LogRecord) -> bool:
-        """Return False to suppress the log record, True to allow it."""
-        if record.levelno != logging.ERROR:
-            return True
-
-        msg = record.getMessage()
-        if "could not find an interface" not in msg:
-            return True
-
-        return not any(iface in msg for iface in self._SUPPRESSED_INTERFACES)
 
 
 class SendspinMpris:
@@ -83,11 +58,11 @@ class SendspinMpris:
     _adapter_root: SendspinMprisAdapterRoot | None
     _adapter_player: SendspinMprisAdapterPlayer | None
     _adapter_tracklist: SendspinMprisAdapterTrackList | None
+    _adapter_playlists: SendspinMprisAdapterPlaylists | None
     _service: MprisService | None
     _update_notifier: MprisUpdateNotifier | None
     _running: bool
     _listener_removers: list[Callable[[], None]]
-    _error_filter: _MprisErrorFilter | None
 
     def __init__(
         self, client: SendspinClient, name: str = "Sendspin", desktop_entry: str | None = None
@@ -110,11 +85,11 @@ class SendspinMpris:
         self._adapter_root = None
         self._adapter_player = None
         self._adapter_tracklist = None
+        self._adapter_playlists = None
         self._service = None
         self._update_notifier = None
         self._running = False
         self._listener_removers = []
-        self._error_filter = None
 
     def start(self) -> None:
         """Start the MPRIS D-Bus service and attach listeners to the client.
@@ -130,6 +105,8 @@ class SendspinMpris:
             _LOGGER.debug("MPRIS not available: mpris_api package not installed or not on Linux")
             return
 
+        from .mpris_service import PatchedMprisService
+
         if self._running:
             _LOGGER.debug("MPRIS interface already running")
             return
@@ -139,21 +116,19 @@ class SendspinMpris:
         except RuntimeError as err:
             raise RuntimeError("MPRIS must be started from within a running event loop") from err
 
-        # Add filter to suppress expected D-Bus errors for unimplemented interfaces
-        self._error_filter = _MprisErrorFilter()
-        logging.getLogger().addFilter(self._error_filter)
-
         self._adapter_root = SendspinMprisAdapterRoot(
             identity=self._name, desktop_entry=self._desktop_entry
         )
         self._adapter_player = SendspinMprisAdapterPlayer(self._client, self._loop, self._state)
         self._adapter_tracklist = SendspinMprisAdapterTrackList()
+        self._adapter_playlists = SendspinMprisAdapterPlaylists()
 
-        self._service = MprisService(
+        self._service = PatchedMprisService(
             name=self._name,
             adapterRoot=self._adapter_root,
             adapterPlayer=self._adapter_player,
             adapterTrackList=self._adapter_tracklist,
+            adapterPlayLists=self._adapter_playlists,
         )
         self._service.start()
         self._update_notifier = self._service.updateNotifier
@@ -189,10 +164,7 @@ class SendspinMpris:
         self._adapter_root = None
         self._adapter_player = None
         self._adapter_tracklist = None
-
-        if self._error_filter is not None:
-            logging.getLogger().removeFilter(self._error_filter)
-            self._error_filter = None
+        self._adapter_playlists = None
 
         _LOGGER.info("MPRIS interface stopped")
 
