@@ -1,6 +1,6 @@
 # aiosendspin-mpris
 
-MPRIS integration for [aiosendspin](https://github.com/Sendspin-Protocol/aiosendspin) applications.
+MPRIS integration for [aiosendspin](https://github.com/Sendspin/aiosendspin) applications.
 
 This package provides MPRIS (Media Player Remote Interfacing Specification) support, allowing desktop environments on Linux to display playback information and control Sendspin playback through standard media controls.
 
